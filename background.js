@@ -35,12 +35,14 @@ async function handleSendTweets(tweets) {
   }
 
   const validTweets = tweets.map(validateTweet).filter(Boolean);
+  console.log(`[XBD] 有効ツイート: ${validTweets.length}/${tweets.length}件`);
   if (validTweets.length === 0) {
     return { success: false, error: '有効なツイートがありません' };
   }
 
   const { webhookUrl } = await chrome.storage.local.get('webhookUrl');
   if (!webhookUrl || !WEBHOOK_URL_PATTERN.test(webhookUrl)) {
+    console.error('[XBD] Webhook URLが未設定または不正です');
     return { success: false, error: 'Webhook URLが未設定または不正です。オプション画面で設定してください。' };
   }
 
@@ -59,16 +61,17 @@ async function handleSendTweets(tweets) {
       });
 
       if (res.ok) {
+        console.log(`[XBD] 送信OK: ${tweet.id}`);
         sentCount++;
         newIds.push(tweet.id);
       } else if (res.status === 429) {
-        console.error(`Rate limited at tweet ${tweet.id}. Stopping.`);
+        console.warn(`[XBD] レート制限: ${tweet.id} で停止`);
         break;
       } else {
-        console.error(`Webhook error for tweet ${tweet.id}: ${res.status}`);
+        console.error(`[XBD] 送信失敗: ${tweet.id} (HTTP ${res.status})`);
       }
     } catch (err) {
-      console.error(`Failed to send tweet ${tweet.id}:`, err);
+      console.error(`[XBD] 送信例外: ${tweet.id}: ${err.message}`);
     }
 
     if (i < validTweets.length - 1) {
@@ -83,6 +86,7 @@ async function handleSendTweets(tweets) {
   updateBadge(sentCount);
 
   const failedCount = validTweets.length - sentCount;
+  console.log(`[XBD] 結果: 送信${sentCount}件, 失敗${failedCount}件`);
   return {
     success: sentCount > 0,
     sentCount,

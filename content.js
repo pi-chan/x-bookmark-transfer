@@ -116,6 +116,7 @@
 
     const tweets = extractTweets();
     if (tweets.length === 0) {
+      console.log('[XBD] ブックマーク0件');
       showToast('ブックマークが見つかりませんでした');
       return;
     }
@@ -125,10 +126,12 @@
     const unsent = tweets.filter((t) => !sentSet.has(t.id));
 
     if (unsent.length === 0) {
+      console.log(`[XBD] 新規なし (検出: ${tweets.length}件, 送信済み: ${sentSet.size}件)`);
       showToast('新規ブックマークはありません');
       return;
     }
 
+    console.log(`[XBD] 送信開始: ${unsent.length}件`);
     showToast(`${unsent.length}件を送信中...`);
 
     try {
@@ -143,14 +146,17 @@
       }
 
       if (response.success) {
+        console.log(`[XBD] 完了: 送信${response.sentCount}件, 失敗${response.failedCount}件`);
         const msg = response.failedCount > 0
           ? `${response.sentCount}件送信（${response.failedCount}件失敗）`
           : `${response.sentCount}件送信しました`;
         showToast(msg);
       } else {
+        console.error(`[XBD] 送信エラー: ${response.error || '不明なエラー'}`);
         showToast(`送信エラー: ${response.error || '不明なエラー'}`);
       }
     } catch (err) {
+      console.error(`[XBD] 例外: ${err.message}`);
       showToast(`送信エラー: ${err.message}`);
     }
   }
