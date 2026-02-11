@@ -6,9 +6,17 @@
   const TWEET_WAIT_TIMEOUT_MS = 10000;
   const SCROLL_WAIT_MS = 1500;
   const MAX_NO_NEW_SCROLLS = 3;
+  const CUTOFF_MONTHS = 3;
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function isTooOld(postDatetime) {
+    if (!postDatetime) return false;
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - CUTOFF_MONTHS);
+    return new Date(postDatetime) < cutoff;
   }
 
   function extractTweets() {
@@ -128,16 +136,23 @@
     console.log('[XBD] スクロール収集開始');
     const collected = new Map();
     let noNewCount = 0;
+    let reachedCutoff = false;
 
-    while (noNewCount < MAX_NO_NEW_SCROLLS) {
+    while (noNewCount < MAX_NO_NEW_SCROLLS && !reachedCutoff) {
       const tweets = extractTweets();
       let addedCount = 0;
 
       for (const tweet of tweets) {
-        if (!collected.has(tweet.id)) {
-          collected.set(tweet.id, tweet);
-          addedCount++;
+        if (collected.has(tweet.id)) continue;
+
+        if (isTooOld(tweet.postDatetime)) {
+          console.log(`[XBD] ${CUTOFF_MONTHS}ヶ月以上前のポストを検出、収集を終了: ${tweet.id}`);
+          reachedCutoff = true;
+          break;
         }
+
+        collected.set(tweet.id, tweet);
+        addedCount++;
       }
 
       if (addedCount > 0) {
@@ -149,8 +164,10 @@
       console.log(`[XBD] スクロール中: ${collected.size}件検出`);
       showToast(`スクロール中... ${collected.size}件検出`);
 
-      window.scrollBy(0, window.innerHeight);
-      await sleep(SCROLL_WAIT_MS);
+      if (!reachedCutoff) {
+        window.scrollBy(0, window.innerHeight);
+        await sleep(SCROLL_WAIT_MS);
+      }
     }
 
     console.log(`[XBD] スクロール完了: 合計${collected.size}件`);
