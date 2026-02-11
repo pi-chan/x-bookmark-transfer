@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 const TEXT_MAX_LENGTH = 200;
 const MAX_SENT_IDS = 10000;
-const WEBHOOK_URL_PATTERN = /^https:\/\/discord\.com\/api\/webhooks\/\d+\/[\w-]+$/;
+const NOTION_API_KEY_PATTERN = /^(ntn_|secret_)[A-Za-z0-9]+$/;
+const DATABASE_ID_PATTERN = /^[a-f0-9]{32}$/;
+const ISO8601_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 
 function extractText(raw) {
   const trimmed = raw.trim();
@@ -18,16 +20,6 @@ function parseStatusHref(href) {
   return { username, tweetId };
 }
 
-function formatMessage(tweet) {
-  const lines = [];
-  lines.push(`\u{1F516} ${tweet.authorHandle}\uFF08${tweet.authorName}\uFF09`);
-  if (tweet.text) {
-    lines.push(tweet.text);
-  }
-  lines.push(tweet.url);
-  return lines.join('\n');
-}
-
 function trimSentIds(existing, newIds) {
   const updated = [...existing, ...newIds];
   if (updated.length > MAX_SENT_IDS) {
@@ -36,9 +28,21 @@ function trimSentIds(existing, newIds) {
   return updated;
 }
 
-function validateWebhookUrl(url) {
-  if (!url) return false;
-  return WEBHOOK_URL_PATTERN.test(url);
+function validateNotionApiKey(key) {
+  if (!key || typeof key !== 'string') return false;
+  return NOTION_API_KEY_PATTERN.test(key);
+}
+
+function validateDatabaseId(id) {
+  if (!id || typeof id !== 'string') return false;
+  return DATABASE_ID_PATTERN.test(id);
+}
+
+function normalizeDatabaseId(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const stripped = raw.replace(/-/g, '').toLowerCase();
+  if (DATABASE_ID_PATTERN.test(stripped)) return stripped;
+  return null;
 }
 
 const TWEET_URL_PATTERN = /^https:\/\/x\.com\/[A-Za-z0-9_]+\/status\/\d+$/;
@@ -54,8 +58,46 @@ function validateTweet(tweet) {
     ? tweet.authorName.slice(0, 100) : '';
   const text = typeof tweet.text === 'string'
     ? tweet.text.slice(0, 200) : '';
+  const postDatetime = typeof tweet.postDatetime === 'string'
+    && ISO8601_PATTERN.test(tweet.postDatetime)
+    ? tweet.postDatetime : null;
 
-  return { id: tweet.id, url: tweet.url, authorHandle, authorName, text };
+  return { id: tweet.id, url: tweet.url, authorHandle, authorName, text, postDatetime };
+}
+
+function buildNotionPayload(tweet, databaseId) {
+  const titleText = tweet.text
+    ? tweet.text.slice(0, 200)
+    : `${tweet.authorHandle} \u306E\u30D6\u30C3\u30AF\u30DE\u30FC\u30AF`;
+
+  const properties = {
+    '\u30BF\u30A4\u30C8\u30EB': {
+      title: [{ text: { content: titleText } }],
+    },
+    'URL': {
+      url: tweet.url,
+    },
+    '\u6295\u7A3F\u8005': {
+      rich_text: [{ text: { content: `${tweet.authorHandle}\uFF08${tweet.authorName}\uFF09` } }],
+    },
+    '\u30B9\u30C6\u30FC\u30BF\u30B9': {
+      select: { name: '\uD83D\uDCE5 Inbox' },
+    },
+    '\u53D6\u5F97\u65E5\u6642': {
+      date: { start: new Date().toISOString() },
+    },
+  };
+
+  if (tweet.postDatetime) {
+    properties['\u30DD\u30B9\u30C8\u65E5\u6642'] = {
+      date: { start: tweet.postDatetime },
+    };
+  }
+
+  return {
+    parent: { database_id: databaseId },
+    properties,
+  };
 }
 
 function filterUnsent(tweetIds, sentIds) {
@@ -131,64 +173,171 @@ describe('parseStatusHref', () => {
   });
 });
 
-describe('formatMessage', () => {
-  it('formats message with text', () => {
+describe('validateNotionApiKey', () => {
+  it('accepts valid ntn_ prefixed key', () => {
+    assert.equal(validateNotionApiKey('ntn_abc123DEF456'), true);
+  });
+
+  it('accepts valid secret_ prefixed key', () => {
+    assert.equal(validateNotionApiKey('secret_abc123DEF456'), true);
+  });
+
+  it('rejects empty string', () => {
+    assert.equal(validateNotionApiKey(''), false);
+  });
+
+  it('rejects null', () => {
+    assert.equal(validateNotionApiKey(null), false);
+  });
+
+  it('rejects undefined', () => {
+    assert.equal(validateNotionApiKey(undefined), false);
+  });
+
+  it('rejects key without valid prefix', () => {
+    assert.equal(validateNotionApiKey('invalid_abc123'), false);
+  });
+
+  it('rejects key with special characters', () => {
+    assert.equal(validateNotionApiKey('ntn_abc!@#'), false);
+  });
+
+  it('rejects prefix only', () => {
+    assert.equal(validateNotionApiKey('ntn_'), false);
+  });
+});
+
+describe('validateDatabaseId', () => {
+  it('accepts valid 32-char hex string', () => {
+    assert.equal(validateDatabaseId('a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4'), true);
+  });
+
+  it('rejects empty string', () => {
+    assert.equal(validateDatabaseId(''), false);
+  });
+
+  it('rejects null', () => {
+    assert.equal(validateDatabaseId(null), false);
+  });
+
+  it('rejects too short', () => {
+    assert.equal(validateDatabaseId('a1b2c3d4'), false);
+  });
+
+  it('rejects too long', () => {
+    assert.equal(validateDatabaseId('a'.repeat(33)), false);
+  });
+
+  it('rejects non-hex characters', () => {
+    assert.equal(validateDatabaseId('g1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4'), false);
+  });
+
+  it('rejects uppercase hex', () => {
+    assert.equal(validateDatabaseId('A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4'), false);
+  });
+});
+
+describe('normalizeDatabaseId', () => {
+  it('returns 32-char hex as-is', () => {
+    assert.equal(normalizeDatabaseId('a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4'), 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4');
+  });
+
+  it('strips hyphens from UUID format', () => {
+    assert.equal(normalizeDatabaseId('a1b2c3d4-e5f6-a1b2-c3d4-e5f6a1b2c3d4'), 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4');
+  });
+
+  it('returns null for empty string', () => {
+    assert.equal(normalizeDatabaseId(''), null);
+  });
+
+  it('returns null for null', () => {
+    assert.equal(normalizeDatabaseId(null), null);
+  });
+
+  it('returns null for invalid input', () => {
+    assert.equal(normalizeDatabaseId('not-a-valid-id'), null);
+  });
+
+  it('returns null for too short after stripping', () => {
+    assert.equal(normalizeDatabaseId('a1b2-c3d4'), null);
+  });
+
+  it('normalizes uppercase hex to lowercase', () => {
+    assert.equal(normalizeDatabaseId('A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4'), 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4');
+  });
+});
+
+describe('buildNotionPayload', () => {
+  it('builds payload with all fields', () => {
     const tweet = {
+      id: '123',
+      url: 'https://x.com/testuser/status/123',
       authorHandle: '@testuser',
       authorName: 'Test User',
       text: 'Hello world',
-      url: 'https://x.com/testuser/status/123',
+      postDatetime: '2025-02-10T12:34:56.000Z',
     };
-    const result = formatMessage(tweet);
-    const expected = '\u{1F516} @testuser\uFF08Test User\uFF09\nHello world\nhttps://x.com/testuser/status/123';
-    assert.equal(result, expected);
+    const result = buildNotionPayload(tweet, 'abc123def456abc123def456abc123de');
+
+    assert.equal(result.parent.database_id, 'abc123def456abc123def456abc123de');
+    assert.equal(result.properties['\u30BF\u30A4\u30C8\u30EB'].title[0].text.content, 'Hello world');
+    assert.equal(result.properties['URL'].url, 'https://x.com/testuser/status/123');
+    assert.equal(result.properties['\u6295\u7A3F\u8005'].rich_text[0].text.content, '@testuser\uFF08Test User\uFF09');
+    assert.equal(result.properties['\u30B9\u30C6\u30FC\u30BF\u30B9'].select.name, '\uD83D\uDCE5 Inbox');
+    assert.ok(result.properties['\u53D6\u5F97\u65E5\u6642'].date.start);
+    assert.equal(result.properties['\u30DD\u30B9\u30C8\u65E5\u6642'].date.start, '2025-02-10T12:34:56.000Z');
   });
 
-  it('formats message without text', () => {
+  it('uses fallback title when text is empty', () => {
     const tweet = {
-      authorHandle: '@testuser',
-      authorName: 'Test User',
-      text: '',
-      url: 'https://x.com/testuser/status/123',
-    };
-    const result = formatMessage(tweet);
-    const expected = '\u{1F516} @testuser\uFF08Test User\uFF09\nhttps://x.com/testuser/status/123';
-    assert.equal(result, expected);
-  });
-
-  it('formats message with null text', () => {
-    const tweet = {
+      id: '456',
+      url: 'https://x.com/user/status/456',
       authorHandle: '@user',
       authorName: 'User',
-      text: null,
-      url: 'https://x.com/user/status/456',
+      text: '',
+      postDatetime: null,
     };
-    const result = formatMessage(tweet);
-    assert.ok(!result.includes('null'));
-    assert.equal(result, '\u{1F516} @user\uFF08User\uFF09\nhttps://x.com/user/status/456');
+    const result = buildNotionPayload(tweet, 'abc123def456abc123def456abc123de');
+    assert.equal(result.properties['\u30BF\u30A4\u30C8\u30EB'].title[0].text.content, '@user \u306E\u30D6\u30C3\u30AF\u30DE\u30FC\u30AF');
   });
 
-  it('includes full-width parentheses around author name', () => {
+  it('omits post datetime when null', () => {
     const tweet = {
-      authorHandle: '@abc',
-      authorName: 'ABC',
+      id: '789',
+      url: 'https://x.com/user/status/789',
+      authorHandle: '@user',
+      authorName: 'User',
       text: 'test',
-      url: 'https://x.com/abc/status/1',
+      postDatetime: null,
     };
-    const result = formatMessage(tweet);
-    assert.ok(result.includes('\uFF08ABC\uFF09'));
+    const result = buildNotionPayload(tweet, 'abc123def456abc123def456abc123de');
+    assert.equal(result.properties['\u30DD\u30B9\u30C8\u65E5\u6642'], undefined);
   });
 
-  it('handles Japanese author name', () => {
+  it('sets status to Inbox', () => {
     const tweet = {
-      authorHandle: '@jp_user',
-      authorName: '\u5C71\u7530\u592A\u90CE',
-      text: '\u3053\u3093\u306B\u3061\u306F',
-      url: 'https://x.com/jp_user/status/789',
+      id: '1',
+      url: 'https://x.com/u/status/1',
+      authorHandle: '@u',
+      authorName: 'U',
+      text: 'x',
+      postDatetime: null,
     };
-    const result = formatMessage(tweet);
-    assert.ok(result.includes('\u5C71\u7530\u592A\u90CE'));
-    assert.ok(result.includes('\u3053\u3093\u306B\u3061\u306F'));
+    const result = buildNotionPayload(tweet, 'abc123def456abc123def456abc123de');
+    assert.equal(result.properties['\u30B9\u30C6\u30FC\u30BF\u30B9'].select.name, '\uD83D\uDCE5 Inbox');
+  });
+
+  it('handles Japanese text in title', () => {
+    const tweet = {
+      id: '2',
+      url: 'https://x.com/jp/status/2',
+      authorHandle: '@jp',
+      authorName: '\u5C71\u7530',
+      text: '\u3053\u3093\u306B\u3061\u306F\u4E16\u754C',
+      postDatetime: null,
+    };
+    const result = buildNotionPayload(tweet, 'abc123def456abc123def456abc123de');
+    assert.equal(result.properties['\u30BF\u30A4\u30C8\u30EB'].title[0].text.content, '\u3053\u3093\u306B\u3061\u306F\u4E16\u754C');
   });
 });
 
@@ -247,53 +396,12 @@ describe('trimSentIds', () => {
   });
 });
 
-describe('validateWebhookUrl', () => {
-  it('accepts valid Discord webhook URL', () => {
-    assert.equal(validateWebhookUrl('https://discord.com/api/webhooks/1234/abcdef'), true);
-  });
-
-  it('rejects empty string', () => {
-    assert.equal(validateWebhookUrl(''), false);
-  });
-
-  it('rejects null', () => {
-    assert.equal(validateWebhookUrl(null), false);
-  });
-
-  it('rejects undefined', () => {
-    assert.equal(validateWebhookUrl(undefined), false);
-  });
-
-  it('rejects non-Discord URL', () => {
-    assert.equal(validateWebhookUrl('https://example.com/webhook'), false);
-  });
-
-  it('rejects http (non-https) Discord URL', () => {
-    assert.equal(validateWebhookUrl('http://discord.com/api/webhooks/123/abc'), false);
-  });
-
-  it('rejects similar-looking but different domain', () => {
-    assert.equal(validateWebhookUrl('https://discord.com.evil.com/api/webhooks/123/abc'), false);
-  });
-
-  it('rejects URL with just the prefix (no ID/token)', () => {
-    assert.equal(validateWebhookUrl('https://discord.com/api/webhooks/'), false);
-  });
-
-  it('rejects URL with path traversal', () => {
-    assert.equal(validateWebhookUrl('https://discord.com/api/webhooks/../../other'), false);
-  });
-
-  it('rejects URL with query parameters', () => {
-    assert.equal(validateWebhookUrl('https://discord.com/api/webhooks/123/abc?extra=1'), false);
-  });
-});
-
 describe('validateTweet', () => {
-  it('validates a correct tweet', () => {
+  it('validates a correct tweet with postDatetime', () => {
     const tweet = {
       id: '123', url: 'https://x.com/user/status/123',
       authorHandle: '@user', authorName: 'User', text: 'hello',
+      postDatetime: '2025-02-10T12:00:00.000Z',
     };
     const result = validateTweet(tweet);
     assert.deepEqual(result, tweet);
@@ -334,6 +442,47 @@ describe('validateTweet', () => {
     assert.equal(result.authorHandle, '');
     assert.equal(result.authorName, '');
     assert.equal(result.text, '');
+    assert.equal(result.postDatetime, null);
+  });
+
+  it('sets postDatetime to null for non-string value', () => {
+    const tweet = {
+      id: '1', url: 'https://x.com/u/status/1',
+      authorHandle: '@u', authorName: 'U', text: '',
+      postDatetime: 12345,
+    };
+    const result = validateTweet(tweet);
+    assert.equal(result.postDatetime, null);
+  });
+
+  it('sets postDatetime to null for non-ISO8601 string', () => {
+    const tweet = {
+      id: '1', url: 'https://x.com/u/status/1',
+      authorHandle: '@u', authorName: 'U', text: '',
+      postDatetime: 'not-a-date',
+    };
+    const result = validateTweet(tweet);
+    assert.equal(result.postDatetime, null);
+  });
+
+  it('accepts valid ISO8601 postDatetime', () => {
+    const tweet = {
+      id: '1', url: 'https://x.com/u/status/1',
+      authorHandle: '@u', authorName: 'U', text: '',
+      postDatetime: '2025-02-10T12:34:56.000Z',
+    };
+    const result = validateTweet(tweet);
+    assert.equal(result.postDatetime, '2025-02-10T12:34:56.000Z');
+  });
+
+  it('accepts ISO8601 without milliseconds', () => {
+    const tweet = {
+      id: '1', url: 'https://x.com/u/status/1',
+      authorHandle: '@u', authorName: 'U', text: '',
+      postDatetime: '2025-02-10T12:34:56Z',
+    };
+    const result = validateTweet(tweet);
+    assert.equal(result.postDatetime, '2025-02-10T12:34:56Z');
   });
 });
 

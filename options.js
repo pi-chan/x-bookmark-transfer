@@ -1,31 +1,63 @@
 'use strict';
 
-const WEBHOOK_URL_PATTERN = /^https:\/\/discord\.com\/api\/webhooks\/\d+\/[\w-]+$/;
+const NOTION_API_KEY_PATTERN = /^(ntn_|secret_)[A-Za-z0-9]+$/;
+const DATABASE_ID_PATTERN = /^[a-f0-9]{32}$/;
+
+function normalizeDatabaseId(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const stripped = raw.replace(/-/g, '').toLowerCase();
+  if (DATABASE_ID_PATTERN.test(stripped)) return stripped;
+  return null;
+}
 
 document.addEventListener('DOMContentLoaded', () => {
-  const webhookUrlInput = document.getElementById('webhook-url');
+  const apiKeyInput = document.getElementById('notion-api-key');
+  const databaseIdInput = document.getElementById('notion-database-id');
   const saveBtn = document.getElementById('save-btn');
   const saveStatus = document.getElementById('save-status');
   const sentCountEl = document.getElementById('sent-count');
   const clearBtn = document.getElementById('clear-btn');
   const clearStatus = document.getElementById('clear-status');
 
+  let hasExistingApiKey = false;
+
   loadSettings();
 
   saveBtn.addEventListener('click', () => {
-    const url = webhookUrlInput.value.trim();
+    const apiKey = apiKeyInput.value.trim();
+    const rawDbId = databaseIdInput.value.trim();
 
-    if (!url) {
-      showStatus(saveStatus, 'URLを入力してください', 'error');
+    const updates = {};
+
+    if (apiKey) {
+      if (!NOTION_API_KEY_PATTERN.test(apiKey)) {
+        showStatus(saveStatus, 'API Keyの形式が正しくありません (ntn_ または secret_ で始まる必要があります)', 'error');
+        return;
+      }
+      updates.notionApiKey = apiKey;
+    } else if (!hasExistingApiKey) {
+      showStatus(saveStatus, 'API Keyを入力してください', 'error');
       return;
     }
 
-    if (!WEBHOOK_URL_PATTERN.test(url)) {
-      showStatus(saveStatus, 'Discord Webhook URLの形式が正しくありません', 'error');
+    if (!rawDbId) {
+      showStatus(saveStatus, 'Database IDを入力してください', 'error');
       return;
     }
 
-    chrome.storage.local.set({ webhookUrl: url }, () => {
+    const databaseId = normalizeDatabaseId(rawDbId);
+    if (!databaseId) {
+      showStatus(saveStatus, 'Database IDの形式が正しくありません (32文字の16進数)', 'error');
+      return;
+    }
+    updates.notionDatabaseId = databaseId;
+
+    chrome.storage.local.set(updates, () => {
+      if (updates.notionApiKey) {
+        hasExistingApiKey = true;
+        apiKeyInput.value = '';
+        apiKeyInput.placeholder = '(設定済み - 変更する場合は新しいキーを入力)';
+      }
       showStatus(saveStatus, '保存しました', 'success');
     });
   });
@@ -42,9 +74,13 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   function loadSettings() {
-    chrome.storage.local.get(['webhookUrl', 'sentTweetIds'], (result) => {
-      if (result.webhookUrl) {
-        webhookUrlInput.value = result.webhookUrl;
+    chrome.storage.local.get(['notionApiKey', 'notionDatabaseId', 'sentTweetIds'], (result) => {
+      if (result.notionApiKey) {
+        hasExistingApiKey = true;
+        apiKeyInput.placeholder = '(設定済み - 変更する場合は新しいキーを入力)';
+      }
+      if (result.notionDatabaseId) {
+        databaseIdInput.value = result.notionDatabaseId;
       }
       const ids = result.sentTweetIds || [];
       sentCountEl.textContent = String(ids.length);

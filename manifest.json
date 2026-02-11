@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "X Bookmark to Discord",
-  "version": "1.0.0",
-  "description": "Send X bookmarks to Discord automatically",
+  "name": "X Bookmark to Notion",
+  "version": "2.0.0",
+  "description": "Send X bookmarks to Notion automatically",
   "permissions": ["storage"],
-  "host_permissions": ["https://discord.com/api/webhooks/*"],
+  "host_permissions": ["https://api.notion.com/*"],
   "content_scripts": [
     {
       "matches": ["https://x.com/i/bookmarks*"],

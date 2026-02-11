@@ -32,8 +32,9 @@
       const authorHandle = `@${username}`;
       const authorName = extractAuthorName(article) || username;
       const text = extractText(article);
+      const postDatetime = extractPostDatetime(article);
 
-      tweets.push({ id: tweetId, url, authorName, authorHandle, text });
+      tweets.push({ id: tweetId, url, authorName, authorHandle, text, postDatetime });
     }
 
     return tweets;
@@ -51,6 +52,12 @@
       }
     }
     return null;
+  }
+
+  function extractPostDatetime(article) {
+    const timeEl = article.querySelector('time[datetime]');
+    if (!timeEl) return null;
+    return timeEl.getAttribute('datetime') || null;
   }
 
   function extractText(article) {
