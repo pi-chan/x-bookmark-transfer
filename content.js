@@ -4,6 +4,12 @@
   const TOAST_DURATION_MS = 3000;
   const TEXT_MAX_LENGTH = 200;
   const TWEET_WAIT_TIMEOUT_MS = 10000;
+  const SCROLL_WAIT_MS = 1500;
+  const MAX_NO_NEW_SCROLLS = 3;
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
   function extractTweets() {
     const articles = document.querySelectorAll('article[data-testid="tweet"]');
@@ -111,10 +117,44 @@
     }, TOAST_DURATION_MS);
   }
 
+  async function collectAllTweets() {
+    console.log('[XBD] スクロール収集開始');
+    const collected = new Map();
+    let noNewCount = 0;
+
+    while (noNewCount < MAX_NO_NEW_SCROLLS) {
+      const tweets = extractTweets();
+      let addedCount = 0;
+
+      for (const tweet of tweets) {
+        if (!collected.has(tweet.id)) {
+          collected.set(tweet.id, tweet);
+          addedCount++;
+        }
+      }
+
+      if (addedCount > 0) {
+        noNewCount = 0;
+      } else {
+        noNewCount++;
+      }
+
+      console.log(`[XBD] スクロール中: ${collected.size}件検出`);
+      showToast(`スクロール中... ${collected.size}件検出`);
+
+      window.scrollBy(0, window.innerHeight);
+      await sleep(SCROLL_WAIT_MS);
+    }
+
+    console.log(`[XBD] スクロール完了: 合計${collected.size}件`);
+    return Array.from(collected.values());
+  }
+
   async function run() {
     await waitForTweets();
 
-    const tweets = extractTweets();
+    showToast('スクロール中...');
+    const tweets = await collectAllTweets();
     if (tweets.length === 0) {
       console.log('[XBD] ブックマーク0件');
       showToast('ブックマークが見つかりませんでした');
