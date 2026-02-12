@@ -1,12 +1,14 @@
 (function () {
   'use strict';
 
-  const TOAST_DURATION_MS = 3000;
   const TEXT_MAX_LENGTH = 200;
   const TWEET_WAIT_TIMEOUT_MS = 10000;
   const SCROLL_WAIT_MS = 1500;
   const MAX_NO_NEW_SCROLLS = 3;
   const CUTOFF_MONTHS = 3;
+  const STATUS_FADE_MS = 5000;
+
+  let aborted = false;
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -18,6 +20,112 @@
     cutoff.setMonth(cutoff.getMonth() - CUTOFF_MONTHS);
     return new Date(postDatetime) < cutoff;
   }
+
+  // --- UI ---
+
+  const PANEL_STYLES = {
+    position: 'fixed',
+    bottom: '24px',
+    right: '24px',
+    zIndex: '2147483647',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    fontSize: '14px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    alignItems: 'flex-end',
+  };
+
+  const BTN_BASE = {
+    border: 'none',
+    borderRadius: '20px',
+    padding: '10px 20px',
+    fontSize: '14px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    color: '#fff',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+    transition: 'opacity 0.2s ease',
+  };
+
+  function createPanel() {
+    const existing = document.getElementById('xbd-panel');
+    if (existing) return existing;
+
+    const panel = document.createElement('div');
+    panel.id = 'xbd-panel';
+    Object.assign(panel.style, PANEL_STYLES);
+    document.body.appendChild(panel);
+    return panel;
+  }
+
+  function createButton(label, color, onClick) {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    Object.assign(btn.style, BTN_BASE, { backgroundColor: color });
+    btn.addEventListener('click', onClick);
+    return btn;
+  }
+
+  function showStatus(text) {
+    const panel = createPanel();
+    let statusEl = document.getElementById('xbd-status');
+    if (!statusEl) {
+      statusEl = document.createElement('div');
+      statusEl.id = 'xbd-status';
+      Object.assign(statusEl.style, {
+        backgroundColor: 'rgba(29, 155, 240, 0.95)',
+        color: '#fff',
+        padding: '8px 16px',
+        borderRadius: '8px',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+        transition: 'opacity 0.3s ease',
+      });
+      panel.prepend(statusEl);
+    }
+    statusEl.textContent = text;
+    statusEl.style.opacity = '1';
+  }
+
+  function fadeStatus() {
+    const statusEl = document.getElementById('xbd-status');
+    if (!statusEl) return;
+    setTimeout(() => {
+      statusEl.style.opacity = '0';
+      setTimeout(() => statusEl.remove(), 300);
+    }, STATUS_FADE_MS);
+  }
+
+  function showStartButton() {
+    const panel = createPanel();
+
+    const oldStart = document.getElementById('xbd-start');
+    if (oldStart) oldStart.remove();
+    const oldAbort = document.getElementById('xbd-abort');
+    if (oldAbort) oldAbort.remove();
+
+    const btn = createButton('Notionへ送信', '#1d9bf0', onStart);
+    btn.id = 'xbd-start';
+    panel.appendChild(btn);
+  }
+
+  function showAbortButton() {
+    const panel = createPanel();
+
+    const oldStart = document.getElementById('xbd-start');
+    if (oldStart) oldStart.remove();
+
+    const btn = createButton('中止', '#f4212e', onAbort);
+    btn.id = 'xbd-abort';
+    panel.appendChild(btn);
+  }
+
+  function removeAbortButton() {
+    const el = document.getElementById('xbd-abort');
+    if (el) el.remove();
+  }
+
+  // --- Tweet extraction ---
 
   function extractTweets() {
     const articles = document.querySelectorAll('article[data-testid="tweet"]');
@@ -102,35 +210,7 @@
     });
   }
 
-  function showToast(message) {
-    const existing = document.getElementById('xbd-toast');
-    if (existing) existing.remove();
-
-    const toast = document.createElement('div');
-    toast.id = 'xbd-toast';
-    toast.textContent = message;
-    Object.assign(toast.style, {
-      position: 'fixed',
-      bottom: '24px',
-      right: '24px',
-      padding: '12px 20px',
-      backgroundColor: 'rgba(29, 155, 240, 0.95)',
-      color: '#fff',
-      borderRadius: '8px',
-      fontSize: '14px',
-      fontWeight: '500',
-      zIndex: '2147483647',
-      boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-      transition: 'opacity 0.3s ease',
-    });
-
-    document.body.appendChild(toast);
-
-    setTimeout(() => {
-      toast.style.opacity = '0';
-      setTimeout(() => toast.remove(), 300);
-    }, TOAST_DURATION_MS);
-  }
+  // --- Collection ---
 
   async function collectAllTweets() {
     console.log('[XBD] スクロール収集開始');
@@ -138,7 +218,7 @@
     let noNewCount = 0;
     let reachedCutoff = false;
 
-    while (noNewCount < MAX_NO_NEW_SCROLLS && !reachedCutoff) {
+    while (noNewCount < MAX_NO_NEW_SCROLLS && !reachedCutoff && !aborted) {
       const tweets = extractTweets();
       let addedCount = 0;
 
@@ -162,26 +242,46 @@
       }
 
       console.log(`[XBD] スクロール中: ${collected.size}件検出`);
-      showToast(`スクロール中... ${collected.size}件検出`);
+      showStatus(`スクロール中... ${collected.size}件検出`);
 
-      if (!reachedCutoff) {
+      if (!reachedCutoff && !aborted) {
         window.scrollBy(0, window.innerHeight);
         await sleep(SCROLL_WAIT_MS);
       }
     }
 
-    console.log(`[XBD] スクロール完了: 合計${collected.size}件`);
+    if (aborted) {
+      console.log(`[XBD] 中止されました (収集済み: ${collected.size}件)`);
+    } else {
+      console.log(`[XBD] スクロール完了: 合計${collected.size}件`);
+    }
     return Array.from(collected.values());
   }
 
-  async function run() {
-    await waitForTweets();
+  // --- Actions ---
 
-    showToast('スクロール中...');
+  async function onStart() {
+    aborted = false;
+    showAbortButton();
+    showStatus('スクロール中...');
+
+    await waitForTweets();
     const tweets = await collectAllTweets();
+
+    if (aborted) {
+      showStatus('中止しました');
+      fadeStatus();
+      removeAbortButton();
+      showStartButton();
+      return;
+    }
+
     if (tweets.length === 0) {
       console.log('[XBD] ブックマーク0件');
-      showToast('ブックマークが見つかりませんでした');
+      showStatus('ブックマークが見つかりませんでした');
+      fadeStatus();
+      removeAbortButton();
+      showStartButton();
       return;
     }
 
@@ -191,12 +291,15 @@
 
     if (unsent.length === 0) {
       console.log(`[XBD] 新規なし (検出: ${tweets.length}件, 送信済み: ${sentSet.size}件)`);
-      showToast('新規ブックマークはありません');
+      showStatus('新規ブックマークはありません');
+      fadeStatus();
+      removeAbortButton();
+      showStartButton();
       return;
     }
 
     console.log(`[XBD] 送信開始: ${unsent.length}件`);
-    showToast(`${unsent.length}件を送信中...`);
+    showStatus(`${unsent.length}件を送信中...`);
 
     try {
       const response = await chrome.runtime.sendMessage({
@@ -205,25 +308,33 @@
       });
 
       if (!response) {
-        showToast('送信エラー: バックグラウンド処理が応答しませんでした');
-        return;
-      }
-
-      if (response.success) {
+        showStatus('送信エラー: バックグラウンド処理が応答しませんでした');
+      } else if (response.success) {
         console.log(`[XBD] 完了: 送信${response.sentCount}件, 失敗${response.failedCount}件`);
         const msg = response.failedCount > 0
-          ? `${response.sentCount}件送信（${response.failedCount}件失敗）`
+          ? `${response.sentCount}件送信 (${response.failedCount}件失敗)`
           : `${response.sentCount}件送信しました`;
-        showToast(msg);
+        showStatus(msg);
       } else {
         console.error(`[XBD] 送信エラー: ${response.error || '不明なエラー'}`);
-        showToast(`送信エラー: ${response.error || '不明なエラー'}`);
+        showStatus(`送信エラー: ${response.error || '不明なエラー'}`);
       }
     } catch (err) {
       console.error(`[XBD] 例外: ${err.message}`);
-      showToast(`送信エラー: ${err.message}`);
+      showStatus(`送信エラー: ${err.message}`);
     }
+
+    fadeStatus();
+    removeAbortButton();
+    showStartButton();
   }
 
-  run();
+  function onAbort() {
+    aborted = true;
+    console.log('[XBD] 中止リクエスト');
+  }
+
+  // --- Init ---
+
+  waitForTweets().then(() => showStartButton());
 })();
