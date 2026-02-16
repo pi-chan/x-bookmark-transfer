@@ -514,3 +514,96 @@ describe('filterUnsent', () => {
     assert.deepEqual(result, ['10000', '10001']);
   });
 });
+
+const QUERY_BATCH_SIZE = 50;
+
+function buildNotionQueryFilter(urls) {
+  return {
+    or: urls.map((url) => ({
+      property: 'URL',
+      url: { equals: url },
+    })),
+  };
+}
+
+function chunkArray(array, size) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
+}
+
+describe('buildNotionQueryFilter', () => {
+  it('builds filter for a single URL', () => {
+    const result = buildNotionQueryFilter(['https://x.com/user/status/123']);
+    assert.deepEqual(result, {
+      or: [
+        { property: 'URL', url: { equals: 'https://x.com/user/status/123' } },
+      ],
+    });
+  });
+
+  it('builds filter for multiple URLs', () => {
+    const urls = [
+      'https://x.com/user/status/1',
+      'https://x.com/user/status/2',
+      'https://x.com/user/status/3',
+    ];
+    const result = buildNotionQueryFilter(urls);
+    assert.equal(result.or.length, 3);
+    assert.deepEqual(result.or[0], { property: 'URL', url: { equals: urls[0] } });
+    assert.deepEqual(result.or[2], { property: 'URL', url: { equals: urls[2] } });
+  });
+
+  it('returns empty or array for empty input', () => {
+    const result = buildNotionQueryFilter([]);
+    assert.deepEqual(result, { or: [] });
+  });
+});
+
+describe('chunkArray', () => {
+  it('returns empty array for empty input', () => {
+    assert.deepEqual(chunkArray([], QUERY_BATCH_SIZE), []);
+  });
+
+  it('returns single chunk when under batch size', () => {
+    const arr = [1, 2, 3];
+    const result = chunkArray(arr, QUERY_BATCH_SIZE);
+    assert.equal(result.length, 1);
+    assert.deepEqual(result[0], [1, 2, 3]);
+  });
+
+  it('returns single chunk when exactly at batch size', () => {
+    const arr = Array.from({ length: QUERY_BATCH_SIZE }, (_, i) => i);
+    const result = chunkArray(arr, QUERY_BATCH_SIZE);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].length, QUERY_BATCH_SIZE);
+  });
+
+  it('splits into multiple chunks when exceeding batch size', () => {
+    const arr = Array.from({ length: QUERY_BATCH_SIZE + 1 }, (_, i) => i);
+    const result = chunkArray(arr, QUERY_BATCH_SIZE);
+    assert.equal(result.length, 2);
+    assert.equal(result[0].length, QUERY_BATCH_SIZE);
+    assert.equal(result[1].length, 1);
+  });
+
+  it('handles large arrays correctly', () => {
+    const arr = Array.from({ length: 150 }, (_, i) => i);
+    const result = chunkArray(arr, QUERY_BATCH_SIZE);
+    assert.equal(result.length, 3);
+    assert.equal(result[0].length, 50);
+    assert.equal(result[1].length, 50);
+    assert.equal(result[2].length, 50);
+  });
+
+  it('preserves element order', () => {
+    const arr = Array.from({ length: 75 }, (_, i) => i);
+    const result = chunkArray(arr, QUERY_BATCH_SIZE);
+    assert.equal(result[0][0], 0);
+    assert.equal(result[0][49], 49);
+    assert.equal(result[1][0], 50);
+    assert.equal(result[1][24], 74);
+  });
+});

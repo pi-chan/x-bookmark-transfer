@@ -4,6 +4,8 @@ const SEND_INTERVAL_MS = 400;
 const MAX_SENT_IDS = 10000;
 const NOTION_API_VERSION = '2022-06-28';
 const NOTION_API_URL = 'https://api.notion.com/v1/pages';
+const NOTION_QUERY_URL = 'https://api.notion.com/v1/databases';
+const QUERY_BATCH_SIZE = 50;
 const TWEET_URL_PATTERN = /^https:\/\/x\.com\/[A-Za-z0-9_]+\/status\/\d+$/;
 const NOTION_API_KEY_PATTERN = /^(ntn_|secret_)[A-Za-z0-9]+$/;
 const DATABASE_ID_PATTERN = /^[a-f0-9]{32}$/;
@@ -60,25 +62,25 @@ function buildNotionPayload(tweet, databaseId) {
     : `${tweet.authorHandle} のブックマーク`;
 
   const properties = {
-    '\u30BF\u30A4\u30C8\u30EB': {
+    'タイトル': {
       title: [{ text: { content: titleText } }],
     },
     'URL': {
       url: tweet.url,
     },
-    '\u6295\u7A3F\u8005': {
-      rich_text: [{ text: { content: `${tweet.authorHandle}\uFF08${tweet.authorName}\uFF09` } }],
+    '投稿者': {
+      rich_text: [{ text: { content: `${tweet.authorHandle}（${tweet.authorName}）` } }],
     },
-    '\u30B9\u30C6\u30FC\u30BF\u30B9': {
-      select: { name: '\uD83D\uDCE5 Inbox' },
+    'ステータス': {
+      select: { name: '📥 Inbox' },
     },
-    '\u53D6\u5F97\u65E5\u6642': {
+    '取得日時': {
       date: { start: new Date().toISOString() },
     },
   };
 
   if (tweet.postDatetime) {
-    properties['\u30DD\u30B9\u30C8\u65E5\u6642'] = {
+    properties['ポスト日時'] = {
       date: { start: tweet.postDatetime },
     };
   }
@@ -91,13 +93,13 @@ function buildNotionPayload(tweet, databaseId) {
 
 async function handleSendTweets(tweets) {
   if (!Array.isArray(tweets)) {
-    return { success: false, error: '\u4E0D\u6B63\u306A\u30EA\u30AF\u30A8\u30B9\u30C8\u3067\u3059' };
+    return { success: false, error: '不正なリクエストです' };
   }
 
   const validTweets = tweets.map(validateTweet).filter(Boolean);
-  console.log(`[XBD] \u6709\u52B9\u30C4\u30A4\u30FC\u30C8: ${validTweets.length}/${tweets.length}\u4EF6`);
+  console.log(`[XBD] 有効ツイート: ${validTweets.length}/${tweets.length}件`);
   if (validTweets.length === 0) {
-    return { success: false, error: '\u6709\u52B9\u306A\u30C4\u30A4\u30FC\u30C8\u304C\u3042\u308A\u307E\u305B\u3093' };
+    return { success: false, error: '有効なツイートがありません' };
   }
 
   const { notionApiKey, notionDatabaseId } = await chrome.storage.local.get([
@@ -106,29 +108,52 @@ async function handleSendTweets(tweets) {
   ]);
 
   if (!notionApiKey || !validateNotionApiKey(notionApiKey)) {
-    console.error('[XBD] Notion API Key\u304C\u672A\u8A2D\u5B9A\u307E\u305F\u306F\u4E0D\u6B63\u3067\u3059');
+    console.error('[XBD] Notion API Keyが未設定または不正です');
     return {
       success: false,
-      error: 'Notion API Key\u304C\u672A\u8A2D\u5B9A\u307E\u305F\u306F\u4E0D\u6B63\u3067\u3059\u3002\u30AA\u30D7\u30B7\u30E7\u30F3\u753B\u9762\u3067\u8A2D\u5B9A\u3057\u3066\u304F\u3060\u3055\u3044\u3002',
+      error: 'Notion API Keyが未設定または不正です。オプション画面で設定してください。',
     };
   }
 
   const databaseId = normalizeDatabaseId(notionDatabaseId);
   if (!databaseId) {
-    console.error('[XBD] Database ID\u304C\u672A\u8A2D\u5B9A\u307E\u305F\u306F\u4E0D\u6B63\u3067\u3059');
+    console.error('[XBD] Database IDが未設定または不正です');
     return {
       success: false,
-      error: 'Database ID\u304C\u672A\u8A2D\u5B9A\u307E\u305F\u306F\u4E0D\u6B63\u3067\u3059\u3002\u30AA\u30D7\u30B7\u30E7\u30F3\u753B\u9762\u3067\u8A2D\u5B9A\u3057\u3066\u304F\u3060\u3055\u3044\u3002',
+      error: 'Database IDが未設定または不正です。オプション画面で設定してください。',
     };
+  }
+
+  const urlsToCheck = validTweets.map((t) => t.url);
+  let existingUrls;
+  try {
+    existingUrls = await queryExistingUrls(urlsToCheck, notionApiKey, databaseId);
+  } catch (err) {
+    console.error(`[XBD] Notion Query 失敗、重複チェックをスキップ: ${err.message}`);
+    existingUrls = new Set();
+  }
+
+  const alreadyExistingIds = [];
+  const tweetsToSend = [];
+  for (const tweet of validTweets) {
+    if (existingUrls.has(tweet.url)) {
+      console.log(`[XBD] Notion既存スキップ: ${tweet.id}`);
+      alreadyExistingIds.push(tweet.id);
+    } else {
+      tweetsToSend.push(tweet);
+    }
+  }
+
+  if (alreadyExistingIds.length > 0) {
+    console.log(`[XBD] Notion既存分: ${alreadyExistingIds.length}件をスキップ`);
   }
 
   let sentCount = 0;
   let firstError = null;
   const newIds = [];
 
-  for (let i = 0; i < validTweets.length; i++) {
-    const tweet = validTweets[i];
-    let sent = false;
+  for (let i = 0; i < tweetsToSend.length; i++) {
+    const tweet = tweetsToSend[i];
 
     for (let retry = 0; retry <= MAX_RETRY_COUNT; retry++) {
       try {
@@ -144,26 +169,25 @@ async function handleSendTweets(tweets) {
         });
 
         if (res.ok) {
-          console.log(`[XBD] \u9001\u4FE1OK: ${tweet.id}`);
+          console.log(`[XBD] 送信OK: ${tweet.id}`);
           sentCount++;
           newIds.push(tweet.id);
-          sent = true;
           break;
         } else if (res.status === 429) {
           const retryAfter = parseInt(res.headers.get('Retry-After') || '1', 10);
           const waitMs = Math.min(retryAfter * 1000, 30000);
-          console.warn(`[XBD] \u30EC\u30FC\u30C8\u5236\u9650: ${tweet.id} ${waitMs}ms\u5F85\u6A5F\u5F8C\u30EA\u30C8\u30E9\u30A4 (${retry + 1}/${MAX_RETRY_COUNT})`);
+          console.warn(`[XBD] レート制限: ${tweet.id} ${waitMs}ms待機後リトライ (${retry + 1}/${MAX_RETRY_COUNT})`);
           await sleep(waitMs);
         } else {
           const body = await res.text().catch(() => '');
-          console.error(`[XBD] \u9001\u4FE1\u5931\u6557: ${tweet.id} (HTTP ${res.status}) ${body}`);
+          console.error(`[XBD] 送信失敗: ${tweet.id} (HTTP ${res.status}) ${body}`);
           if (!firstError) {
             firstError = `HTTP ${res.status}: ${body.slice(0, 200)}`;
           }
           break;
         }
       } catch (err) {
-        console.error(`[XBD] \u9001\u4FE1\u4F8B\u5916: ${tweet.id}: ${err.message}`);
+        console.error(`[XBD] 送信例外: ${tweet.id}: ${err.message}`);
         if (!firstError) {
           firstError = err.message;
         }
@@ -171,24 +195,27 @@ async function handleSendTweets(tweets) {
       }
     }
 
-    if (i < validTweets.length - 1) {
+    if (i < tweetsToSend.length - 1) {
       await sleep(SEND_INTERVAL_MS);
     }
   }
 
-  if (newIds.length > 0) {
-    await saveSentIds(newIds);
+  const idsToCache = [...alreadyExistingIds, ...newIds];
+  if (idsToCache.length > 0) {
+    await saveSentIds(idsToCache);
   }
 
   updateBadge(sentCount);
 
-  const failedCount = validTweets.length - sentCount;
-  console.log(`[XBD] \u7D50\u679C: \u9001\u4FE1${sentCount}\u4EF6, \u5931\u6557${failedCount}\u4EF6`);
+  const skippedCount = alreadyExistingIds.length;
+  const failedCount = tweetsToSend.length - sentCount;
+  console.log(`[XBD] 結果: 送信${sentCount}件, スキップ${skippedCount}件, 失敗${failedCount}件`);
   return {
-    success: sentCount > 0,
+    success: sentCount > 0 || skippedCount > 0,
     sentCount,
+    skippedCount,
     failedCount,
-    error: sentCount === 0 ? (firstError || '\u3059\u3079\u3066\u306E\u9001\u4FE1\u306B\u5931\u6557\u3057\u307E\u3057\u305F') : null,
+    error: sentCount === 0 && skippedCount === 0 ? (firstError || 'すべての送信に失敗しました') : null,
   };
 }
 
@@ -212,4 +239,76 @@ function updateBadge(count) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildNotionQueryFilter(urls) {
+  return {
+    or: urls.map((url) => ({
+      property: 'URL',
+      url: { equals: url },
+    })),
+  };
+}
+
+function chunkArray(array, size) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
+}
+
+async function queryExistingUrls(urls, notionApiKey, databaseId) {
+  if (urls.length === 0) return new Set();
+
+  const existingUrls = new Set();
+  const batches = chunkArray(urls, QUERY_BATCH_SIZE);
+
+  for (const batch of batches) {
+    const filter = buildNotionQueryFilter(batch);
+    let retries = 0;
+
+    while (retries <= MAX_RETRY_COUNT) {
+      try {
+        const res = await fetch(`${NOTION_QUERY_URL}/${databaseId}/query`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${notionApiKey}`,
+            'Notion-Version': NOTION_API_VERSION,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ filter, page_size: 100 }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          for (const page of data.results) {
+            const urlProp = page.properties?.URL?.url;
+            if (urlProp) {
+              existingUrls.add(urlProp);
+            }
+          }
+          break;
+        } else if (res.status === 429) {
+          const retryAfter = parseInt(res.headers.get('Retry-After') || '1', 10);
+          const waitMs = Math.min(retryAfter * 1000, 30000);
+          console.warn(`[XBD] Notion Query レート制限: ${waitMs}ms待機後リトライ (${retries + 1}/${MAX_RETRY_COUNT})`);
+          await sleep(waitMs);
+          retries++;
+        } else {
+          const body = await res.text().catch(() => '');
+          console.error(`[XBD] Notion Query 失敗 (HTTP ${res.status}): ${body}`);
+          if (res.status === 401 || res.status === 403) {
+            throw new Error(`Notion Query 認証エラー (HTTP ${res.status})`);
+          }
+          break;
+        }
+      } catch (err) {
+        console.error(`[XBD] Notion Query 例外: ${err.message}`);
+        break;
+      }
+    }
+  }
+
+  return existingUrls;
 }
