@@ -13,7 +13,14 @@
     }
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "x-bookmark-to-notion@pi-chan",
+      "strict_min_version": "109.0"
+    }
   },
   "options_ui": {
     "page": "options.html",
