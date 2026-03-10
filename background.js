@@ -137,11 +137,11 @@ async function handleSendTweets(tweets) {
   const tweetsToSend = [];
   for (const tweet of validTweets) {
     if (existingUrls.has(tweet.url)) {
-      console.log(`[XBD] Notion既存スキップ: ${tweet.id}`);
+      console.log(`[XBD] Notion既存を検出、以降の処理を打ち切り: ${tweet.id}`);
       alreadyExistingIds.push(tweet.id);
-    } else {
-      tweetsToSend.push(tweet);
+      break;
     }
+    tweetsToSend.push(tweet);
   }
 
   if (alreadyExistingIds.length > 0) {

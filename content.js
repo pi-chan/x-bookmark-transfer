@@ -5,20 +5,12 @@
   const TWEET_WAIT_TIMEOUT_MS = 10000;
   const SCROLL_WAIT_MS = 1500;
   const MAX_NO_NEW_SCROLLS = 3;
-  const CUTOFF_MONTHS = 3;
   const STATUS_FADE_MS = 5000;
 
   let aborted = false;
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  function isTooOld(postDatetime) {
-    if (!postDatetime) return false;
-    const cutoff = new Date();
-    cutoff.setMonth(cutoff.getMonth() - CUTOFF_MONTHS);
-    return new Date(postDatetime) < cutoff;
   }
 
   // --- UI ---
@@ -212,22 +204,22 @@
 
   // --- Collection ---
 
-  async function collectAllTweets() {
+  async function collectAllTweets(sentSet) {
     console.log('[XBD] スクロール収集開始');
     const collected = new Map();
     let noNewCount = 0;
-    let reachedCutoff = false;
+    let reachedSent = false;
 
-    while (noNewCount < MAX_NO_NEW_SCROLLS && !reachedCutoff && !aborted) {
+    while (noNewCount < MAX_NO_NEW_SCROLLS && !reachedSent && !aborted) {
       const tweets = extractTweets();
       let addedCount = 0;
 
       for (const tweet of tweets) {
         if (collected.has(tweet.id)) continue;
 
-        if (isTooOld(tweet.postDatetime)) {
-          console.log(`[XBD] ${CUTOFF_MONTHS}ヶ月以上前のポストを検出、収集を終了: ${tweet.id}`);
-          reachedCutoff = true;
+        if (sentSet.has(tweet.id)) {
+          console.log(`[XBD] 送信済みポストを検出、収集を終了: ${tweet.id}`);
+          reachedSent = true;
           break;
         }
 
@@ -244,7 +236,7 @@
       console.log(`[XBD] スクロール中: ${collected.size}件検出`);
       showStatus(`スクロール中... ${collected.size}件検出`);
 
-      if (!reachedCutoff && !aborted) {
+      if (!reachedSent && !aborted) {
         window.scrollBy(0, window.innerHeight);
         await sleep(SCROLL_WAIT_MS);
       }
@@ -266,7 +258,10 @@
     showStatus('スクロール中...');
 
     await waitForTweets();
-    const tweets = await collectAllTweets();
+
+    const { sentTweetIds = [] } = await chrome.storage.local.get('sentTweetIds');
+    const sentSet = new Set(sentTweetIds);
+    const tweets = await collectAllTweets(sentSet);
 
     if (aborted) {
       showStatus('中止しました');
@@ -277,20 +272,7 @@
     }
 
     if (tweets.length === 0) {
-      console.log('[XBD] ブックマーク0件');
-      showStatus('ブックマークが見つかりませんでした');
-      fadeStatus();
-      removeAbortButton();
-      showStartButton();
-      return;
-    }
-
-    const { sentTweetIds = [] } = await chrome.storage.local.get('sentTweetIds');
-    const sentSet = new Set(sentTweetIds);
-    const unsent = tweets.filter((t) => !sentSet.has(t.id));
-
-    if (unsent.length === 0) {
-      console.log(`[XBD] 新規なし (検出: ${tweets.length}件, 送信済み: ${sentSet.size}件)`);
+      console.log('[XBD] 新規ブックマークなし');
       showStatus('新規ブックマークはありません');
       fadeStatus();
       removeAbortButton();
@@ -298,13 +280,13 @@
       return;
     }
 
-    console.log(`[XBD] 送信開始: ${unsent.length}件`);
-    showStatus(`${unsent.length}件を送信中...`);
+    console.log(`[XBD] 送信開始: ${tweets.length}件`);
+    showStatus(`${tweets.length}件を送信中...`);
 
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'SEND_TWEETS',
-        tweets: unsent,
+        tweets,
       });
 
       if (!response) {
