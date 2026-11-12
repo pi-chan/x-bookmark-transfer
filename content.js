@@ -6,8 +6,16 @@
   const SCROLL_WAIT_MS = 1500;
   const MAX_NO_NEW_SCROLLS = 3;
   const STATUS_FADE_MS = 5000;
+  const PATH_CHECK_INTERVAL_MS = 500;
+  // ブックマークは「履歴」ページのタブに移った。旧URLの/i/bookmarksを開くと/i/historyへリダイレクトされる
+  const BOOKMARKS_PATH_PATTERN = /^\/i\/(history|bookmarks)\/?$/;
 
   let aborted = false;
+  let running = false;
+
+  function isBookmarksPath(pathname) {
+    return BOOKMARKS_PATH_PATTERN.test(pathname);
+  }
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -115,6 +123,32 @@
   function removeAbortButton() {
     const el = document.getElementById('xbd-abort');
     if (el) el.remove();
+  }
+
+  function removeStartButton() {
+    const el = document.getElementById('xbd-start');
+    if (el) el.remove();
+  }
+
+  // XはSPAなので、ブックマークといいねのタブを切り替えてもスクリプトは読み込み直されない
+  function syncPanelWithPath() {
+    if (isBookmarksPath(location.pathname)) {
+      if (!running && !document.getElementById('xbd-start')) showStartButton();
+      return;
+    }
+
+    removeStartButton();
+    if (running && !aborted) {
+      console.log('[XBD] ブックマーク以外のページへ移動したため中止');
+      aborted = true;
+    }
+  }
+
+  function finishRun() {
+    running = false;
+    fadeStatus();
+    removeAbortButton();
+    syncPanelWithPath();
   }
 
   // --- Tweet extraction ---
@@ -254,6 +288,7 @@
 
   async function onStart() {
     aborted = false;
+    running = true;
     showAbortButton();
     showStatus('スクロール中...');
 
@@ -265,18 +300,14 @@
 
     if (aborted) {
       showStatus('中止しました');
-      fadeStatus();
-      removeAbortButton();
-      showStartButton();
+      finishRun();
       return;
     }
 
     if (tweets.length === 0) {
       console.log('[XBD] 新規ブックマークなし');
       showStatus('新規ブックマークはありません');
-      fadeStatus();
-      removeAbortButton();
-      showStartButton();
+      finishRun();
       return;
     }
 
@@ -306,9 +337,7 @@
       showStatus(`送信エラー: ${err.message}`);
     }
 
-    fadeStatus();
-    removeAbortButton();
-    showStartButton();
+    finishRun();
   }
 
   function onAbort() {
@@ -318,5 +347,13 @@
 
   // --- Init ---
 
-  waitForTweets().then(() => showStartButton());
+  waitForTweets().then(() => {
+    syncPanelWithPath();
+    let lastPath = location.pathname;
+    setInterval(() => {
+      if (location.pathname === lastPath) return;
+      lastPath = location.pathname;
+      syncPanelWithPath();
+    }, PATH_CHECK_INTERVAL_MS);
+  });
 })();

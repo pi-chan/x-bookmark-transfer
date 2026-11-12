@@ -105,6 +105,12 @@ function filterUnsent(tweetIds, sentIds) {
   return tweetIds.filter((id) => !sentSet.has(id));
 }
 
+const BOOKMARKS_PATH_PATTERN = /^\/i\/(history|bookmarks)\/?$/;
+
+function isBookmarksPath(pathname) {
+  return BOOKMARKS_PATH_PATTERN.test(pathname);
+}
+
 describe('extractText', () => {
   it('returns empty string for empty input', () => {
     assert.equal(extractText(''), '');
@@ -605,5 +611,28 @@ describe('chunkArray', () => {
     assert.equal(result[0][49], 49);
     assert.equal(result[1][0], 50);
     assert.equal(result[1][24], 74);
+  });
+});
+
+describe('isBookmarksPath', () => {
+  it('returns true for the bookmarks tab of the history page', () => {
+    assert.equal(isBookmarksPath('/i/history'), true);
+  });
+
+  it('returns true with a trailing slash', () => {
+    assert.equal(isBookmarksPath('/i/history/'), true);
+  });
+
+  it('returns true for the legacy bookmarks path', () => {
+    assert.equal(isBookmarksPath('/i/bookmarks'), true);
+  });
+
+  it('returns false for the likes tab of the history page', () => {
+    assert.equal(isBookmarksPath('/i/history/likes'), false);
+  });
+
+  it('returns false for other pages', () => {
+    assert.equal(isBookmarksPath('/home'), false);
+    assert.equal(isBookmarksPath('/i/historyx'), false);
   });
 });
