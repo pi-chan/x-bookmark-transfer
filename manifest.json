@@ -21,8 +21,7 @@
       "id": "x-bookmark-to-notion@pi-chan",
       "strict_min_version": "109.0",
       "data_collection_permissions": {
-        "technicaldataAllowed": false,
-        "interactiondataAllowed": false
+        "required": ["none"]
       }
     }
   },
